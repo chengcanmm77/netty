@@ -24,10 +24,14 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.Iterator;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 
 public class ChannelInitializerTest {
     private static final int TIMEOUT_MILLIS = 1000;
@@ -54,6 +58,44 @@ public class ChannelInitializerTest {
     @After
     public void tearDown() {
         group.shutdownGracefully(0, TIMEOUT_MILLIS, TimeUnit.MILLISECONDS).syncUninterruptibly();
+    }
+
+    @Test
+    public void testChannelInitializerInInitializerCorrectOrdering() {
+        final ChannelInboundHandlerAdapter handler1 = new ChannelInboundHandlerAdapter();
+        final ChannelInboundHandlerAdapter handler2 = new ChannelInboundHandlerAdapter();
+        final ChannelInboundHandlerAdapter handler3 = new ChannelInboundHandlerAdapter();
+        final ChannelInboundHandlerAdapter handler4 = new ChannelInboundHandlerAdapter();
+
+        client.handler(new ChannelInitializer<Channel>() {
+            @Override
+            protected void initChannel(Channel ch) throws Exception {
+                ch.pipeline().addLast(handler1);
+                ch.pipeline().addLast(new ChannelInitializer<Channel>() {
+                    @Override
+                    protected void initChannel(Channel ch) throws Exception {
+                        ch.pipeline().addLast(handler2);
+                        ch.pipeline().addLast(handler3);
+                    }
+                });
+                ch.pipeline().addLast(handler4);
+            }
+        }).localAddress(LocalAddress.ANY);
+        Channel channel = client.bind().syncUninterruptibly().channel();
+
+        // Execute some task on the EventLoop and wait until its done to be sure all handlers are added to the pipeline.
+        channel.eventLoop().submit(new Runnable() {
+            @Override
+            public void run() {
+                // NOOP
+            }
+        }).syncUninterruptibly();
+        Iterator<Map.Entry<String, ChannelHandler>> handlers = channel.pipeline().iterator();
+        assertSame(handler1, handlers.next().getValue());
+        assertSame(handler2, handlers.next().getValue());
+        assertSame(handler3, handlers.next().getValue());
+        assertSame(handler4, handlers.next().getValue());
+        assertFalse(handlers.hasNext());
     }
 
     @Test(timeout = TIMEOUT_MILLIS)
